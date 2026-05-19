@@ -296,17 +296,36 @@
             } catch(e) { if(!e.message.includes('cancelled')) showToast('扫描失败'); }
         }
 
-        async function startListening() {
-            if(!bluetoothDevice) return showToast('请先扫描设备');
+   async function startListening() {
+    if (!bluetoothDevice) return showToast('请先扫描设备');
+    try {
+        // 优先尝试连接 GATT（兼容性更好）
+        const server = await bluetoothDevice.gatt.connect();
+        // 获取 RSSI 需要不断调用 getRSSI，但需轮询
+        showToast('已连接，正在读取信号...');
+        advListenerActive = true;
+        // 每2秒读取一次 RSSI
+        setInterval(async () => {
+            if (!bluetoothDevice.gatt.connected) return;
             try {
-                if(!advListenerActive) {
-                    await bluetoothDevice.watchAdvertisements();
-                    bluetoothDevice.addEventListener('advertisementreceived', handleAdvert);
-                    advListenerActive = true;
-                }
-                showToast('正在监听广告信号...');
-            } catch(e) { showToast('启动监听失败'); }
+                const rssi = await bluetoothDevice.gatt.getRssi(); // 注意：方法名可能是 getRSSI 小写
+                currentRSSI = rssi;
+                rssiDisplay.textContent = 'RSSI: ' + rssi + ' dBm';
+                updatePosition();
+            } catch (e) { /* 忽略 */ }
+        }, 2000);
+    } catch (e) {
+        // GATT 连接也失败则尝试广告监听
+        try {
+            await bluetoothDevice.watchAdvertisements();
+            bluetoothDevice.addEventListener('advertisementreceived', handleAdvert);
+            advListenerActive = true;
+            showToast('正在监听广告信号...');
+        } catch (e2) {
+            showToast('无法获取信号，请确认设备正在广播');
         }
+    }
+}
 
         function handleAdvert(event) {
             currentRSSI = event.rssi;
