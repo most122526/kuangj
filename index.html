@@ -21,8 +21,7 @@
         body {
             font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
             background: radial-gradient(circle at 50% 20%, #2c3340, #12161e);
-            min-height: 100vh;
-            display: flex; justify-content: center; align-items: center; padding: 16px;
+            min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 16px;
         }
         .app {
             max-width: 800px; width: 100%; background: var(--bg); border-radius: 36px;
@@ -30,10 +29,7 @@
             border: 1px solid #3a4350; color: var(--text);
             display: flex; flex-direction: column; gap: 14px;
         }
-        .nav {
-            display: flex; gap: 8px; background: #1e2430; border-radius: 24px;
-            padding: 4px; border: 1px solid #2e3844;
-        }
+        .nav { display: flex; gap: 8px; background: #1e2430; border-radius: 24px; padding: 4px; border: 1px solid #2e3844; }
         .nav-tab {
             flex: 1; text-align: center; padding: 10px 8px; border-radius: 20px;
             font-weight: 700; font-size: 14px; cursor: pointer; color: #9aa4b8; transition: 0.2s;
@@ -61,10 +57,7 @@
         .btn-primary { background: var(--accent); color: #12161e; }
         .btn-danger { background: var(--danger); }
         .btn:active { transform: scale(0.96); }
-        .chart-box {
-            background: var(--card); border-radius: var(--radius); padding: 12px;
-            border: 1px solid var(--border);
-        }
+        .chart-box { background: var(--card); border-radius: var(--radius); padding: 12px; border: 1px solid var(--border); }
         .chart-inner { width: 100%; height: 220px; }
         .ble-panel {
             background: var(--card); border-radius: var(--radius); padding: 14px;
@@ -74,12 +67,14 @@
             padding: 8px 12px; border-radius: 14px; border: 1px solid #3a444e;
             background: #131820; color: #fff; font-family: monospace; font-size: 12px; flex:1; min-width:160px;
         }
+        .slider-row {
+            display: flex; align-items: center; gap: 10px; width: 100%;
+        }
+        input[type=range] { flex:1; accent-color: var(--accent); }
         .coordinate-view {
             display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center;
         }
-        canvas {
-            background: #1e2630; border-radius: 16px; border: 1px solid #3a4652;
-        }
+        canvas { background: #1e2630; border-radius: 16px; border: 1px solid #3a4652; }
         .position-info {
             background: #242830; border-radius: 16px; padding: 12px;
             font-family: monospace; font-size: 13px; color: #c0d0e0; border: 1px solid #3a4048;
@@ -139,9 +134,14 @@
     <div class="view" id="view-beacon">
         <div class="ble-panel">
             <input id="svcUuid" value="0000fff0-0000-1000-8000-00805f9b34fb" placeholder="服务UUID">
-            <button class="btn" id="scanBtn">🔍 扫描设备</button>
-            <button class="btn btn-primary" id="startLocBtn" disabled>📍 开始监听</button>
-            <span id="rssiDisplay" style="font-size:14px;">RSSI: --</span>
+            <button class="btn btn-primary" id="connectBtn">🔗 连接设备</button>
+            <button class="btn" id="disconnectBtn" disabled>断开</button>
+            <span id="connStatus" style="font-size:14px;">未连接</span>
+        </div>
+        <div class="slider-row" id="simSliderRow" style="display:none;">
+            <span style="font-size:13px;">🧪 模拟RSSI:</span>
+            <input type="range" id="simRSSISlider" min="-90" max="-30" value="-55" step="1">
+            <span id="simRSSIVal" style="font-size:13px;">-55 dBm</span>
         </div>
         <div class="coordinate-view">
             <canvas id="locCanvas" width="360" height="360"></canvas>
@@ -154,6 +154,7 @@
         <div class="algo-steps" id="algoSteps">
             等待蓝牙数据...
         </div>
+        <button class="btn" id="toggleSimBtn" onclick="toggleSimMode()">🧪 切换模拟</button>
     </div>
 </div>
 <div id="toastBox"></div>
@@ -166,27 +167,31 @@
         const SVC_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
 
         let pollingTimer, history=[], alarmOn=false;
-        let bluetoothDevice=null, advListenerActive=false, currentRSSI=-60;
-        const TX_POWER = -59;      // 1米处参考RSSI
-        const N_FACTOR = 1.8;      // 衰减因子（调小使距离变化更剧烈）
-        const SCALE = 30;          // 像素/米（放大移动幅度）
+        let bluetoothDevice=null, gattServer=null, advTimer=null;
+        let currentRSSI=-60, simMode=false;
+        const TX_POWER = -59;
+        const N_FACTOR = 1.8;
+        const SCALE = 30;
 
         const navTabs = document.querySelectorAll('.nav-tab');
         const views = document.querySelectorAll('.view');
-        const scanBtn = document.getElementById('scanBtn');
-        const startLocBtn = document.getElementById('startLocBtn');
-        const rssiDisplay = document.getElementById('rssiDisplay');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const connStatus = document.getElementById('connStatus');
+        const simSliderRow = document.getElementById('simSliderRow');
+        const simRSSISlider = document.getElementById('simRSSISlider');
+        const simRSSIVal = document.getElementById('simRSSIVal');
         const rssiValue = document.getElementById('rssiValue');
         const estDist = document.getElementById('estDist');
         const posDist = document.getElementById('posDist');
         const algoSteps = document.getElementById('algoSteps');
         const locCanvas = document.getElementById('locCanvas');
         const ctx = locCanvas.getContext('2d');
+        const toggleSimBtn = document.getElementById('toggleSimBtn');
 
-        // 三个固定信标坐标（画布像素）
         const beacons = [
-            { x:60,  y:60,  name:'A' },
-            { x:300, y:60,  name:'B' },
+            { x:60, y:60, name:'A' },
+            { x:300, y:60, name:'B' },
             { x:180, y:300, name:'C' }
         ];
 
@@ -285,88 +290,119 @@
         };
 
         // ================= 蓝牙定位 =================
-        async function scanDevice() {
+        async function connectDevice() {
             if (!navigator.bluetooth) { alert('需要Web Bluetooth'); return; }
             try {
                 bluetoothDevice = await navigator.bluetooth.requestDevice({
                     filters:[{services:[SVC_UUID]}], optionalServices:[SVC_UUID]
                 });
-                startLocBtn.disabled = false;
-                showToast('设备已选择，点击开始监听');
-            } catch(e) { if(!e.message.includes('cancelled')) showToast('扫描失败'); }
+                gattServer = await bluetoothDevice.gatt.connect();
+                connStatus.textContent = '已连接';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                showToast('蓝牙已连接，正在启动信号监听...');
+                startRSSIUpdate();
+            } catch(e) {
+                if(!e.message.includes('cancelled')) showToast('连接失败: '+e.message);
+            }
         }
 
-   async function startListening() {
-    if (!bluetoothDevice) return showToast('请先扫描设备');
-    try {
-        // 优先尝试连接 GATT（兼容性更好）
-        const server = await bluetoothDevice.gatt.connect();
-        // 获取 RSSI 需要不断调用 getRSSI，但需轮询
-        showToast('已连接，正在读取信号...');
-        advListenerActive = true;
-        // 每2秒读取一次 RSSI
-        setInterval(async () => {
-            if (!bluetoothDevice.gatt.connected) return;
-            try {
-                const rssi = await bluetoothDevice.gatt.getRssi(); // 注意：方法名可能是 getRSSI 小写
-                currentRSSI = rssi;
-                rssiDisplay.textContent = 'RSSI: ' + rssi + ' dBm';
-                updatePosition();
-            } catch (e) { /* 忽略 */ }
-        }, 2000);
-    } catch (e) {
-        // GATT 连接也失败则尝试广告监听
-        try {
-            await bluetoothDevice.watchAdvertisements();
-            bluetoothDevice.addEventListener('advertisementreceived', handleAdvert);
-            advListenerActive = true;
-            showToast('正在监听广告信号...');
-        } catch (e2) {
-            showToast('无法获取信号，请确认设备正在广播');
+        function startRSSIUpdate() {
+            // 方法1：尝试广告监听
+            if(bluetoothDevice.watchAdvertisements) {
+                bluetoothDevice.watchAdvertisements().then(() => {
+                    bluetoothDevice.addEventListener('advertisementreceived', handleAdvert);
+                }).catch(() => {
+                    showToast('广告监听失败，切换到GATT轮询RSSI（需浏览器支持）');
+                    startGattRSSIPolling();
+                });
+            } else {
+                startGattRSSIPolling();
+            }
         }
-    }
-}
+
+        function startGattRSSIPolling() {
+            // 某些浏览器支持通过GATT读取RSSI（非标准，尝试）
+            if(advTimer) clearInterval(advTimer);
+            advTimer = setInterval(async () => {
+                if(!bluetoothDevice || !bluetoothDevice.gatt.connected) {
+                    clearInterval(advTimer);
+                    return;
+                }
+                try {
+                    // 尝试调用getRssi（实际标准中不存在，但某些环境有）
+                    if(typeof bluetoothDevice.gatt.getRssi === 'function') {
+                        const rssi = await bluetoothDevice.gatt.getRssi();
+                        currentRSSI = rssi;
+                        updatePosition();
+                        document.getElementById('rssiValue').textContent = currentRSSI;
+                    } else {
+                        // 无法获取，提示用户使用模拟
+                        showToast('当前浏览器不支持获取RSSI，请使用模拟模式');
+                        clearInterval(advTimer);
+                    }
+                } catch(e) {}
+            }, 2000);
+        }
 
         function handleAdvert(event) {
             currentRSSI = event.rssi;
-            rssiDisplay.textContent = 'RSSI: ' + currentRSSI + ' dBm';
-            updatePosition();
+            if(!simMode) {
+                document.getElementById('rssiValue').textContent = currentRSSI;
+                updatePosition();
+            }
+        }
+
+        function disconnect() {
+            if(bluetoothDevice && bluetoothDevice.gatt.connected) {
+                bluetoothDevice.gatt.disconnect();
+            }
+            if(bluetoothDevice && bluetoothDevice.removeEventListener) {
+                bluetoothDevice.removeEventListener('advertisementreceived', handleAdvert);
+            }
+            if(advTimer) clearInterval(advTimer);
+            connStatus.textContent = '未连接';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            bluetoothDevice = null;
+            gattServer = null;
+            showToast('已断开');
         }
 
         function updatePosition() {
-            // 距离计算
-            const distance = Math.pow(10, (TX_POWER - currentRSSI) / (10 * N_FACTOR));
+            const rssi = simMode ? parseInt(simRSSISlider.value) : currentRSSI;
+            const distance = Math.pow(10, (TX_POWER - rssi) / (10 * N_FACTOR));
             const pixelDist = distance * SCALE;
-            // 固定角度：让目标点沿45度方向移动，信号弱则远
             const angle = Math.PI/4;
-            const targetX = 180 + pixelDist * Math.cos(angle);
-            const targetY = 180 + pixelDist * Math.sin(angle);
+            const tx = 180 + pixelDist * Math.cos(angle);
+            const ty = 180 + pixelDist * Math.sin(angle);
 
-            document.getElementById('rssiValue').textContent = currentRSSI;
+            document.getElementById('rssiValue').textContent = rssi;
             document.getElementById('estDist').textContent = distance.toFixed(2);
             document.getElementById('posDist').textContent = pixelDist.toFixed(0);
-
-            drawCanvas(targetX, targetY, distance);
-            updateSteps(distance, pixelDist);
+            drawCanvas(tx, ty, distance);
+            document.getElementById('algoSteps').innerHTML = `
+                <strong>📡 RSSI:</strong> ${rssi} dBm<br>
+                <strong>📐 距离模型:</strong> d = 10^((TxPower - RSSI)/(10·n))<br>
+                &nbsp;&nbsp; TxPower = ${TX_POWER} dBm, n = ${N_FACTOR}<br>
+                <strong>📏 距离:</strong> ${distance.toFixed(2)} m (画布: ${pixelDist.toFixed(0)} px)
+            `;
         }
 
         function drawCanvas(tx, ty, dist) {
             ctx.clearRect(0,0,360,360);
-            // 绘制原点
-            ctx.fillStyle = '#f08a4b';
-            ctx.beginPath(); ctx.arc(180,180,8,0,2*Math.PI); ctx.fill();
+            // 原点
+            ctx.fillStyle='#f08a4b'; ctx.beginPath(); ctx.arc(180,180,8,0,2*Math.PI); ctx.fill();
             ctx.fillStyle='#fff'; ctx.font='bold 12px sans-serif'; ctx.fillText('原点',190,175);
-            // 绘制三个固定信标
+            // 三个信标
             beacons.forEach(b => {
-                ctx.fillStyle='#4ea8de';
-                ctx.beginPath(); ctx.arc(b.x,b.y,6,0,2*Math.PI); ctx.fill();
-                ctx.fillStyle='#fff'; ctx.font='bold 11px sans-serif'; ctx.fillText(b.name, b.x+10, b.y-8);
+                ctx.fillStyle='#4ea8de'; ctx.beginPath(); ctx.arc(b.x,b.y,6,0,2*Math.PI); ctx.fill();
+                ctx.fillText(b.name, b.x+10, b.y-8);
             });
-            // 绘制目标点
-            ctx.fillStyle='#2ecc71';
-            ctx.beginPath(); ctx.arc(tx, ty, 8,0,2*Math.PI); ctx.fill();
-            ctx.fillStyle='#fff'; ctx.fillText('目标', tx+12, ty-10);
-            // 距离连线
+            // 目标点
+            ctx.fillStyle='#2ecc71'; ctx.beginPath(); ctx.arc(tx, ty, 8,0,2*Math.PI); ctx.fill();
+            ctx.fillText('目标', tx+12, ty-10);
+            // 连线
             ctx.strokeStyle='#f59e0b'; ctx.lineWidth=2;
             ctx.beginPath(); ctx.moveTo(180,180); ctx.lineTo(tx,ty); ctx.stroke();
             // 距离圆
@@ -374,34 +410,34 @@
             ctx.beginPath(); ctx.arc(180,180,dist*SCALE,0,2*Math.PI); ctx.stroke();
         }
 
-        function updateSteps(distance, pixelDist) {
-            document.getElementById('algoSteps').innerHTML = `
-                <strong>📡 当前RSSI:</strong> ${currentRSSI} dBm<br>
-                <strong>📐 距离模型:</strong> d = 10^((TxPower - RSSI)/(10·n))<br>
-                &nbsp;&nbsp; TxPower = ${TX_POWER} dBm, n = ${N_FACTOR}<br>
-                <strong>📏 估算距离:</strong> ${distance.toFixed(2)} m<br>
-                <strong>📍 画布映射:</strong> 每米 ${SCALE} 像素 → ${pixelDist.toFixed(0)} px<br>
-                <strong>💡 效果:</strong> 信号越弱，距离越远，目标点离原点越远。
-            `;
-        }
+        window.toggleSimMode = function() {
+            simMode = !simMode;
+            simSliderRow.style.display = simMode ? 'flex' : 'none';
+            toggleSimBtn.textContent = simMode ? '📡 真实模式' : '🧪 切换模拟';
+            if(simMode) {
+                simRSSISlider.addEventListener('input', ()=>{
+                    simRSSIVal.textContent = simRSSISlider.value + ' dBm';
+                    updatePosition();
+                });
+                updatePosition();
+            }
+        };
 
-        // 初始画布绘制
+        // 事件绑定
+        connectBtn.addEventListener('click', connectDevice);
+        disconnectBtn.addEventListener('click', disconnect);
+
+        // 初始化画布
         function initCanvas() {
             drawCanvas(180,180,0);
             document.getElementById('algoSteps').innerHTML = '等待蓝牙数据...';
         }
 
-        // 事件
-        scanBtn.addEventListener('click', scanDevice);
-        startLocBtn.addEventListener('click', startListening);
-
-        // 启动轮询
         function startMonitoring() { fetchData(); pollingTimer = setInterval(fetchData, 2000); }
 
         function init() {
             initCharts();
             startMonitoring();
-            document.getElementById('alarmStatusBadge').textContent='关闭';
             initCanvas();
         }
         init();
