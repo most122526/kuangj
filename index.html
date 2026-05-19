@@ -67,13 +67,9 @@
             padding: 8px 12px; border-radius: 14px; border: 1px solid #3a444e;
             background: #131820; color: #fff; font-family: monospace; font-size: 12px; flex:1; min-width:160px;
         }
-        .slider-group {
-            display: flex; flex-direction: column; gap: 6px; width: 100%;
-        }
         .slider-row {
-            display: flex; align-items: center; gap: 8px;
+            display: flex; align-items: center; gap: 10px; width: 100%;
         }
-        .slider-row label { width: 40px; font-size: 12px; }
         input[type=range] { flex:1; accent-color: var(--accent); }
         .coordinate-view {
             display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center;
@@ -142,28 +138,23 @@
             <button class="btn" id="disconnectBtn" disabled>断开</button>
             <span id="connStatus" style="font-size:14px;">未连接</span>
         </div>
-        <div style="display:flex; align-items:center; gap:12px;">
-            <span style="font-size:14px;">模式：</span>
-            <button class="btn" id="modeRealBtn" style="background:var(--accent);">📡 真实信号</button>
-            <button class="btn" id="modeSimBtn">🧪 三点模拟</button>
+        <div class="slider-row" id="simSliderRow" style="display:none;">
+            <span style="font-size:13px;">🧪 模拟RSSI:</span>
+            <input type="range" id="simRSSISlider" min="-90" max="-30" value="-55" step="1">
+            <span id="simRSSIVal" style="font-size:13px;">-55 dBm</span>
         </div>
-
-        <!-- 模拟滑块区域 (三点信标RSSI) -->
-        <div class="slider-group" id="simSliders" style="display:none;">
-            <div class="slider-row"><label>A信标</label><input type="range" id="rssiA" min="-90" max="-30" value="-55"><span id="valA">-55</span> dBm</div>
-            <div class="slider-row"><label>B信标</label><input type="range" id="rssiB" min="-90" max="-30" value="-60"><span id="valB">-60</span> dBm</div>
-            <div class="slider-row"><label>C信标</label><input type="range" id="rssiC" min="-90" max="-30" value="-65"><span id="valC">-65</span> dBm</div>
-        </div>
-
         <div class="coordinate-view">
             <canvas id="locCanvas" width="360" height="360"></canvas>
-            <div class="position-info" id="posInfo">
-                <div>📶 RSSI / 距离：</div>
-                <div id="rssiDistText">--</div>
-                <div>📍 目标坐标：(<span id="targetX">--</span>, <span id="targetY">--</span>)</div>
+            <div class="position-info">
+                <div>📶 RSSI：<span id="rssiValue">--</span> dBm</div>
+                <div>📏 估算距离：<span id="estDist">--</span> m</div>
+                <div>📍 相对原点距离：<span id="posDist">--</span> 像素</div>
             </div>
         </div>
-        <div class="algo-steps" id="algoSteps">等待数据...</div>
+        <div class="algo-steps" id="algoSteps">
+            等待蓝牙数据...
+        </div>
+        <button class="btn" id="toggleSimBtn" onclick="toggleSimMode()">🧪 切换模拟</button>
     </div>
 </div>
 <div id="toastBox"></div>
@@ -176,41 +167,34 @@
         const SVC_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
 
         let pollingTimer, history=[], alarmOn=false;
-        let bluetoothDevice=null, advTimer=null;
-        let currentRSSI=-60;
-        let useSimMode = true; // 默认模拟模式
-        const TX_POWER = -59, N_FACTOR = 1.8, SCALE = 25; // 像素/米
+        let bluetoothDevice=null, gattServer=null, advTimer=null;
+        let currentRSSI=-60, simMode=false;
+        const TX_POWER = -59;
+        const N_FACTOR = 1.8;
+        const SCALE = 30;
 
-        // 三个信标固定坐标（画布像素）
-        const beacons = [
-            { x:80, y:80,  name:'A' },
-            { x:280, y:80, name:'B' },
-            { x:180, y:280,name:'C' }
-        ];
-
-        // DOM
         const navTabs = document.querySelectorAll('.nav-tab');
         const views = document.querySelectorAll('.view');
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
         const connStatus = document.getElementById('connStatus');
-        const modeRealBtn = document.getElementById('modeRealBtn');
-        const modeSimBtn = document.getElementById('modeSimBtn');
-        const simSliders = document.getElementById('simSliders');
-        const rssiA = document.getElementById('rssiA');
-        const rssiB = document.getElementById('rssiB');
-        const rssiC = document.getElementById('rssiC');
-        const valA = document.getElementById('valA');
-        const valB = document.getElementById('valB');
-        const valC = document.getElementById('valC');
-        const rssiDistText = document.getElementById('rssiDistText');
-        const targetX = document.getElementById('targetX');
-        const targetY = document.getElementById('targetY');
+        const simSliderRow = document.getElementById('simSliderRow');
+        const simRSSISlider = document.getElementById('simRSSISlider');
+        const simRSSIVal = document.getElementById('simRSSIVal');
+        const rssiValue = document.getElementById('rssiValue');
+        const estDist = document.getElementById('estDist');
+        const posDist = document.getElementById('posDist');
         const algoSteps = document.getElementById('algoSteps');
         const locCanvas = document.getElementById('locCanvas');
         const ctx = locCanvas.getContext('2d');
+        const toggleSimBtn = document.getElementById('toggleSimBtn');
 
-        // 导航
+        const beacons = [
+            { x:60, y:60, name:'A' },
+            { x:300, y:60, name:'B' },
+            { x:180, y:300, name:'C' }
+        ];
+
         navTabs.forEach(tab => {
             tab.addEventListener('click', ()=>{
                 navTabs.forEach(t=>t.classList.remove('active'));
@@ -305,120 +289,18 @@
             } catch(e){ console.error(e); }
         };
 
-        // ================= 定位计算 =================
-        function rssiToDistance(rssi) {
-            return Math.pow(10, (TX_POWER - rssi) / (10 * N_FACTOR));
-        }
-
-        function trilateration(x1,y1,r1, x2,y2,r2, x3,y3,r3) {
-            const A = 2*x2 - 2*x1, B = 2*y2 - 2*y1;
-            const C = r1*r1 - r2*r2 - x1*x1 + x2*x2 - y1*y1 + y2*y2;
-            const D = 2*x3 - 2*x2, E = 2*y3 - 2*y2;
-            const F = r2*r2 - r3*r3 - x2*x2 + x3*x3 - y2*y2 + y3*y3;
-            const denom = A*E - B*D;
-            if(Math.abs(denom) < 0.01) return null;
-            const x = (C*E - F*B) / denom;
-            const y = (A*F - C*D) / denom;
-            return {x, y};
-        }
-
-        function updateRealPosition() {
-            const rssi = currentRSSI;
-            const d = rssiToDistance(rssi);
-            // 简单映射：固定角度45°，距离放大
-            const angle = Math.PI/4;
-            const px = 180 + d * SCALE * Math.cos(angle);
-            const py = 180 + d * SCALE * Math.sin(angle);
-            rssiDistText.innerHTML = `RSSI: ${rssi} dBm → 距离: ${d.toFixed(2)} m`;
-            targetX.textContent = ((px-180)/SCALE).toFixed(2);
-            targetY.textContent = ((py-180)/SCALE).toFixed(2);
-            drawReal(px, py, d);
-            algoSteps.innerHTML = `
-                <strong>📡 RSSI:</strong> ${rssi} dBm<br>
-                <strong>📐 d = 10^((TxPower-RSSI)/(10*n)) = ${d.toFixed(2)} m</strong><br>
-                <strong>📍 映射坐标 (45°):</strong> (${((px-180)/SCALE).toFixed(2)}, ${((py-180)/SCALE).toFixed(2)}) m
-            `;
-        }
-
-        function updateSimPosition() {
-            const rA = parseInt(rssiA.value), rB = parseInt(rssiB.value), rC = parseInt(rssiC.value);
-            valA.textContent = rA; valB.textContent = rB; valC.textContent = rC;
-            const dA = rssiToDistance(rA), dB = rssiToDistance(rB), dC = rssiToDistance(rC);
-            // 信标像素坐标
-            const pos = trilateration(beacons[0].x, beacons[0].y, dA*SCALE,
-                                       beacons[1].x, beacons[1].y, dB*SCALE,
-                                       beacons[2].x, beacons[2].y, dC*SCALE);
-            if(pos) {
-                targetX.textContent = pos.x.toFixed(1);
-                targetY.textContent = pos.y.toFixed(1);
-                drawSim(pos.x, pos.y, dA, dB, dC);
-                rssiDistText.innerHTML = `dA=${dA.toFixed(2)}m, dB=${dB.toFixed(2)}m, dC=${dC.toFixed(2)}m`;
-                algoSteps.innerHTML = `
-                    <strong>信标A:</strong> RSSI ${rA} → 距离 ${dA.toFixed(2)} m<br>
-                    <strong>信标B:</strong> RSSI ${rB} → 距离 ${dB.toFixed(2)} m<br>
-                    <strong>信标C:</strong> RSSI ${rC} → 距离 ${dC.toFixed(2)} m<br>
-                    <strong>🔺 三点定位解算:</strong><br>
-                    &nbsp;&nbsp;联立圆方程: (x-xA)²+(y-yA)²=dA² ...<br>
-                    &nbsp;&nbsp;解得目标坐标: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})
-                `;
-            }
-        }
-
-        function drawReal(tx, ty, d) {
-            ctx.clearRect(0,0,360,360);
-            // 原点
-            ctx.fillStyle='#f08a4b'; ctx.beginPath(); ctx.arc(180,180,6,0,2*Math.PI); ctx.fill();
-            ctx.fillText('原点',190,175);
-            // 目标
-            ctx.fillStyle='#2ecc71'; ctx.beginPath(); ctx.arc(tx, ty, 7,0,2*Math.PI); ctx.fill();
-            ctx.fillText('目标', tx+10, ty-10);
-            ctx.strokeStyle='#f59e0b'; ctx.lineWidth=2;
-            ctx.beginPath(); ctx.moveTo(180,180); ctx.lineTo(tx,ty); ctx.stroke();
-            ctx.beginPath(); ctx.arc(180,180, d*SCALE, 0, 2*Math.PI); ctx.stroke();
-        }
-
-        function drawSim(tx, ty, dA, dB, dC) {
-            ctx.clearRect(0,0,360,360);
-            // 三个信标
-            beacons.forEach((b,i) => {
-                ctx.fillStyle='#4ea8de';
-                ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, 2*Math.PI); ctx.fill();
-                ctx.fillText(b.name, b.x+10, b.y-8);
-            });
-            // 距离圆
-            const dists = [dA, dB, dC];
-            beacons.forEach((b,i) => {
-                ctx.strokeStyle = ['#f08a4b','#4ea8de','#f59e0b'][i];
-                ctx.lineWidth=1;
-                ctx.beginPath(); ctx.arc(b.x, b.y, dists[i]*SCALE, 0, 2*Math.PI); ctx.stroke();
-            });
-            // 目标点
-            ctx.fillStyle='#2ecc71'; ctx.beginPath(); ctx.arc(tx, ty, 7, 0, 2*Math.PI); ctx.fill();
-            ctx.fillText('目标', tx+10, ty-10);
-        }
-
-        // 模式切换
-        function setMode(sim) {
-            useSimMode = sim;
-            modeRealBtn.style.background = sim ? '' : 'var(--accent)';
-            modeSimBtn.style.background = sim ? 'var(--accent)' : '';
-            simSliders.style.display = sim ? 'flex' : 'none';
-            if(sim) updateSimPosition();
-            else updateRealPosition();
-        }
-
-        // 蓝牙连接
+        // ================= 蓝牙定位 =================
         async function connectDevice() {
             if (!navigator.bluetooth) { alert('需要Web Bluetooth'); return; }
             try {
                 bluetoothDevice = await navigator.bluetooth.requestDevice({
                     filters:[{services:[SVC_UUID]}], optionalServices:[SVC_UUID]
                 });
-                await bluetoothDevice.gatt.connect();
+                gattServer = await bluetoothDevice.gatt.connect();
                 connStatus.textContent = '已连接';
                 connectBtn.disabled = true;
                 disconnectBtn.disabled = false;
-                showToast('已连接，尝试监听信号...');
+                showToast('蓝牙已连接，正在启动信号监听...');
                 startRSSIUpdate();
             } catch(e) {
                 if(!e.message.includes('cancelled')) showToast('连接失败: '+e.message);
@@ -426,41 +308,137 @@
         }
 
         function startRSSIUpdate() {
+            // 方法1：尝试广告监听
             if(bluetoothDevice.watchAdvertisements) {
                 bluetoothDevice.watchAdvertisements().then(() => {
-                    bluetoothDevice.addEventListener('advertisementreceived', (event) => {
-                        currentRSSI = event.rssi;
-                        if(!useSimMode) updateRealPosition();
-                    });
+                    bluetoothDevice.addEventListener('advertisementreceived', handleAdvert);
                 }).catch(() => {
-                    showToast('广告监听失败');
+                    showToast('广告监听失败，切换到GATT轮询RSSI（需浏览器支持）');
+                    startGattRSSIPolling();
                 });
             } else {
-                showToast('当前环境不支持广告监听，请使用模拟模式');
+                startGattRSSIPolling();
+            }
+        }
+
+        function startGattRSSIPolling() {
+            // 某些浏览器支持通过GATT读取RSSI（非标准，尝试）
+            if(advTimer) clearInterval(advTimer);
+            advTimer = setInterval(async () => {
+                if(!bluetoothDevice || !bluetoothDevice.gatt.connected) {
+                    clearInterval(advTimer);
+                    return;
+                }
+                try {
+                    // 尝试调用getRssi（实际标准中不存在，但某些环境有）
+                    if(typeof bluetoothDevice.gatt.getRssi === 'function') {
+                        const rssi = await bluetoothDevice.gatt.getRssi();
+                        currentRSSI = rssi;
+                        updatePosition();
+                        document.getElementById('rssiValue').textContent = currentRSSI;
+                    } else {
+                        // 无法获取，提示用户使用模拟
+                        showToast('当前浏览器不支持获取RSSI，请使用模拟模式');
+                        clearInterval(advTimer);
+                    }
+                } catch(e) {}
+            }, 2000);
+        }
+
+        function handleAdvert(event) {
+            currentRSSI = event.rssi;
+            if(!simMode) {
+                document.getElementById('rssiValue').textContent = currentRSSI;
+                updatePosition();
             }
         }
 
         function disconnect() {
-            if(bluetoothDevice && bluetoothDevice.gatt.connected) bluetoothDevice.gatt.disconnect();
+            if(bluetoothDevice && bluetoothDevice.gatt.connected) {
+                bluetoothDevice.gatt.disconnect();
+            }
+            if(bluetoothDevice && bluetoothDevice.removeEventListener) {
+                bluetoothDevice.removeEventListener('advertisementreceived', handleAdvert);
+            }
+            if(advTimer) clearInterval(advTimer);
             connStatus.textContent = '未连接';
             connectBtn.disabled = false;
             disconnectBtn.disabled = true;
+            bluetoothDevice = null;
+            gattServer = null;
+            showToast('已断开');
         }
 
-        // 事件
-        modeRealBtn.addEventListener('click', ()=> setMode(false));
-        modeSimBtn.addEventListener('click', ()=> setMode(true));
-        rssiA.addEventListener('input', updateSimPosition);
-        rssiB.addEventListener('input', updateSimPosition);
-        rssiC.addEventListener('input', updateSimPosition);
+        function updatePosition() {
+            const rssi = simMode ? parseInt(simRSSISlider.value) : currentRSSI;
+            const distance = Math.pow(10, (TX_POWER - rssi) / (10 * N_FACTOR));
+            const pixelDist = distance * SCALE;
+            const angle = Math.PI/4;
+            const tx = 180 + pixelDist * Math.cos(angle);
+            const ty = 180 + pixelDist * Math.sin(angle);
+
+            document.getElementById('rssiValue').textContent = rssi;
+            document.getElementById('estDist').textContent = distance.toFixed(2);
+            document.getElementById('posDist').textContent = pixelDist.toFixed(0);
+            drawCanvas(tx, ty, distance);
+            document.getElementById('algoSteps').innerHTML = `
+                <strong>📡 RSSI:</strong> ${rssi} dBm<br>
+                <strong>📐 距离模型:</strong> d = 10^((TxPower - RSSI)/(10·n))<br>
+                &nbsp;&nbsp; TxPower = ${TX_POWER} dBm, n = ${N_FACTOR}<br>
+                <strong>📏 距离:</strong> ${distance.toFixed(2)} m (画布: ${pixelDist.toFixed(0)} px)
+            `;
+        }
+
+        function drawCanvas(tx, ty, dist) {
+            ctx.clearRect(0,0,360,360);
+            // 原点
+            ctx.fillStyle='#f08a4b'; ctx.beginPath(); ctx.arc(180,180,8,0,2*Math.PI); ctx.fill();
+            ctx.fillStyle='#fff'; ctx.font='bold 12px sans-serif'; ctx.fillText('原点',190,175);
+            // 三个信标
+            beacons.forEach(b => {
+                ctx.fillStyle='#4ea8de'; ctx.beginPath(); ctx.arc(b.x,b.y,6,0,2*Math.PI); ctx.fill();
+                ctx.fillText(b.name, b.x+10, b.y-8);
+            });
+            // 目标点
+            ctx.fillStyle='#2ecc71'; ctx.beginPath(); ctx.arc(tx, ty, 8,0,2*Math.PI); ctx.fill();
+            ctx.fillText('目标', tx+12, ty-10);
+            // 连线
+            ctx.strokeStyle='#f59e0b'; ctx.lineWidth=2;
+            ctx.beginPath(); ctx.moveTo(180,180); ctx.lineTo(tx,ty); ctx.stroke();
+            // 距离圆
+            ctx.strokeStyle='#f59e0b'; ctx.lineWidth=1;
+            ctx.beginPath(); ctx.arc(180,180,dist*SCALE,0,2*Math.PI); ctx.stroke();
+        }
+
+        window.toggleSimMode = function() {
+            simMode = !simMode;
+            simSliderRow.style.display = simMode ? 'flex' : 'none';
+            toggleSimBtn.textContent = simMode ? '📡 真实模式' : '🧪 切换模拟';
+            if(simMode) {
+                simRSSISlider.addEventListener('input', ()=>{
+                    simRSSIVal.textContent = simRSSISlider.value + ' dBm';
+                    updatePosition();
+                });
+                updatePosition();
+            }
+        };
+
+        // 事件绑定
         connectBtn.addEventListener('click', connectDevice);
         disconnectBtn.addEventListener('click', disconnect);
 
-        // 初始化
+        // 初始化画布
+        function initCanvas() {
+            drawCanvas(180,180,0);
+            document.getElementById('algoSteps').innerHTML = '等待蓝牙数据...';
+        }
+
+        function startMonitoring() { fetchData(); pollingTimer = setInterval(fetchData, 2000); }
+
         function init() {
             initCharts();
             startMonitoring();
-            setMode(true); // 默认模拟模式
+            initCanvas();
         }
         init();
     })();
